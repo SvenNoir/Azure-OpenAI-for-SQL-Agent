@@ -4,17 +4,14 @@ from fastapi import FastAPI
 from fastapi import APIRouter
 from dotenv import load_dotenv
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from app.schema.LanggraphModel import SQLAgentRequest
 from app.controller.LanggraphController import SQLAgent
+
+load_dotenv()
 
 app = FastAPI()
 
 app_route = APIRouter()
-
-class SQLAgentRequest(BaseModel):
-    request: str
-    user_id: str
-    conversation_id: str
 
 def generate_stream(request: str, user_id: str, conversation_id: str):
     try:

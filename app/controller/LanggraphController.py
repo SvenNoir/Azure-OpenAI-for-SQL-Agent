@@ -149,7 +149,6 @@ class LanggraphAgent:
     conversation_id = state["conversation_id"]
     list_chat_history = self.chat_history.get_chat_history(conversation_id, 6)
     request = state["question"]
-    #list_chat_history = state["list_chat_history"]
     user_input = HumanMessage(content=request)
     chat_prompt = ChatPromptTemplate.from_messages(
         [
@@ -196,13 +195,6 @@ class LanggraphAgent:
       yield {"response":token_stream}
     
     self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=token_stream, role="assistant")
-    
-    #self.chat_history.store_chat(
-    #    conversation_id=conversation_id, 
-    #    user_id=state["user_id"], 
-    #    message=token_stream, 
-    #    role="assistant"
-    #)
     
 
   def agent_graph(self, question, user_id, conversation_id):
