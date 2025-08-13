@@ -209,8 +209,8 @@ class LanggraphAgent:
 
     graph = builder.compile()
 
-    with open("graph.png", "wb") as f:
-      f.write(graph.get_graph().draw_mermaid_png())
+    #with open("graph.png", "wb") as f:
+    #  f.write(graph.get_graph().draw_mermaid_png())
     
     run_graph = graph.stream({"question": question, "response": [], "list_chat_history":[], "conversation_id":conversation_id, "user_id":user_id}, stream_mode = "messages")
 
