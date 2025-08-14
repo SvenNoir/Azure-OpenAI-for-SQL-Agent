@@ -16,7 +16,7 @@ app_route = APIRouter()
 def generate_stream(request: str, user_id: str, conversation_id: str):
     try:
         for token in SQLAgent.agent_graph(request, user_id, conversation_id):
-            yield json.dumps({'content': token})
+            yield token
     except Exception as e:
         yield json.dumps({'error': str(e)})
 
