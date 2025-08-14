@@ -1,12 +1,16 @@
+import os
 import uuid
 import requests
 import streamlit as st
-import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def chatbot_ui():
+    #Test
     st.title("SQL Demo Chatbot")
     
-    api_url = "http://localhost:8000/agent-test"
+    api_url = os.environ.get("API_URL")
     
     # Initialize session state variables
     if "conversation_id" not in st.session_state:
