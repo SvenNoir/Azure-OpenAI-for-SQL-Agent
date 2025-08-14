@@ -215,6 +215,7 @@ class LanggraphAgent:
     run_graph = graph.stream({"question": question, "response": [], "list_chat_history":[], "conversation_id":conversation_id, "user_id":user_id}, stream_mode = "messages")
 
     for token, metadata in run_graph:
+      print(token.content)
       yield token.content
 
 
