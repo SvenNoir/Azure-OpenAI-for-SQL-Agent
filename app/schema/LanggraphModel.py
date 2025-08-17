@@ -5,6 +5,12 @@ from typing_extensions import TypedDict
 class SQLSchema(BaseModel):
     query: str = Field(..., description="query generated from the llm and then to be executed.")
 
+class RouteSchema(BaseModel):
+    route: str = Field(..., description="route chosen from the llm output.")
+
+class AISearchSchema(BaseModel):
+    data_summary: str = Field(..., description="Summary of the data retrieved from the AI search.")
+
 class SQLAgentRequest(BaseModel):
     request: str
     user_id: str

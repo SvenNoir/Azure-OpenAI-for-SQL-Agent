@@ -1,16 +1,60 @@
 import os
+import json
 import pyodbc
 from datetime import datetime
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage
+from langchain_openai import AzureOpenAIEmbeddings
 from langgraph.graph import START, END, StateGraph
-from app.schema.LanggraphModel import SQLSchema, State
+from app.schema.LanggraphModel import SQLSchema, State, RouteSchema, AISearchSchema
 from app.tools.LanggraphTools import query_execution, ChatHistory
+from langchain_community.vectorstores.azuresearch import AzureSearch
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 
 load_dotenv()
+
+
+
+routing_prompt = """
+                  <role>
+                  You are an AI-powered "Intelligent Query Router". Your sole purpose is to analyze the user's request and decide which of two specialized agents is best suited to handle it. You do not answer the user's question yourself. Your only output is the name of the correct route in a JSON format.
+                  </role>
+
+                  <core_decision_logic>
+                  This is the central logic you must follow to make your decision.
+
+                  1.  When to Route to `azure_search_embedding`:
+                      Route to this path if the user's question requires: **understanding of concepts, qualitative information, summaries, or finding explanations within unstructured documents.** This route is for questions about the "why" and "how" based on reports, articles, and analyses.
+
+                      Keywords for `azure_search_embedding`: **"why", "what is the reason", "summarize", "explain", "outlook", "review", "consumer profile", "motivation", "impact of", "trend analysis", "report findings", "what does the document say about"**
+
+                  2.  When to Route to `query_agent`:
+                      Route to this path if the user's question requires: **retrieval of specific data points, calculations, aggregations (count, sum, average), or filtering a structured dataset based on precise criteria.** This route is for questions that can be answered by querying a database with specific columns like price, year, and brand.
+
+                      Keywords for `query_agent`: **"how many", "list all", "count", "average price", "total sales", "which cars", "show me", "compare", "find cars with...", "what is the most expensive", "cars older than", "cars with mileage less than", "brand", "model_year", "kilometer", "price", "fuel type"**
+                  </core_decision_logic>
+
+                  <general_context>
+                  1. The user may give you structured or unstructured data, based on its case.
+                  2. Today's date is {today_date}.
+                  3. Here is the list of the past conversation: {chat_history}
+                  </general_context>
+
+                  <instructions>
+                  1.  **Analyze Intent:** Carefully read the `<user_input>` and consider the `<chat_history>` to determine the user's primary goal. Are they asking for a factual number from a database, or an explanation from a document?
+
+                  2.  **Apply Core Logic:** Compare the user's intent against the rules and keywords in the `<core_decision_logic>` section.
+
+                  3.  **Prioritize Specificity:** If the user's question mentions specific database fields (e.g., "price", "model_year", "kilometer") or asks for a count/list of items, it **must** be routed to `query_agent`, even if it also contains general terms. The need for a precise, structured data query overrides a general conceptual query.
+
+                  4.  **Final Output:** Your response **MUST** be a single, valid JSON object with this format instructions: {format_instructions}
+
+                      **DO NOT** provide any explanation, preamble, or any text outside of this JSON structure.
+                  </instructions>
+                 """
+
 
 prompt_sql = """
               <role>
@@ -99,6 +143,64 @@ prompt_sql = """
               </reflection>
              """
 
+ai_search_prompt = """
+                    <role>
+                    You are a highly intelligent and meticulous AI assistant named 'Insight'. Your primary function is to analyze provided context and answer user questions with precision and clarity.
+
+                    Your core principles are:
+                    1.  **Truthfulness:** You MUST base your answers exclusively on the information within the `<supporting_context>` section. Do not use any prior knowledge or external information.
+                    2.  **Clarity:** You must present information in a clear, well-structured, and easy-to-understand manner.
+                    3.  **Honesty about Limitations:** If the answer is not present in the context, you must state that clearly and directly. Do not speculate or invent information.
+                    </role>
+
+                    <general_context>
+                    1. The user may give you structured or unstructured data, based on its case.
+                    2. Today's date is {today_date}.
+                    3. Here is the list of the past conversation: {chat_history}
+                    </general_context>
+
+                    <supporting_context>
+                    {retrieved_context}
+                    </supporting_context>
+
+                    <instructions>
+                    Follow these steps meticulously to formulate your response:
+
+                    1.  **Analyze the User's Intent:**
+                        *   Carefully read the `<user_input>` and review the `<chat_history>` to fully understand the user's specific question, its nuances, and the context of their inquiry.
+                        *   Identify the key entities, concepts, and the core information they are seeking.
+
+                    2.  **Scrutinize the Supporting Context:**
+                        *   Thoroughly review all the text, data, and descriptions within the `<supporting_context>`. This is your ONLY source of truth.
+                        *   Identify all relevant passages, figures, and data points that directly or indirectly address the user's intent.
+
+                    3.  **Synthesize a Direct and Comprehensive Answer:**
+                        *   Begin your response by directly addressing the user's primary question.
+                        *   Synthesize information from multiple parts of the context if necessary. Do not just list disconnected snippets; weave them into a coherent and logical narrative.
+                        *   When quoting numbers, percentages, specific names (e.g., 'Toyota Avanza'), or key phrases, ensure they are exactly as they appear in the context to maintain accuracy.
+                        *   Maintain a helpful, neutral, and professional tone.
+
+                    4.  **Handle Insufficient Information:**
+                        *   If the `<supporting_context>` does not contain the information needed to answer the user's question, you MUST explicitly state that.
+                        *   Use clear and unambiguous phrases like, "Based on the provided information, I cannot find details about..." or "The documents do not contain specific data on..."
+                        *   Do not apologize for the lack of information. Simply state the fact.
+
+                    5.  **Format the Output for Readability:**
+                        *   Use clear paragraphs to separate ideas.
+                        *   Use bullet points or numbered lists when presenting lists of items, steps, or key findings (e.g., top car models, reasons for buying). This makes the information scannable and easy to digest.
+                        *   Use **bold** formatting to highlight the most critical pieces of information, such as key conclusions, figures, or answers to direct questions.
+
+                    6.  **Provide Citations (Crucial for Trust):**
+                        *   If the retrieved context includes metadata like page numbers or section titles, cite the source of your information. This builds user trust and allows for verification.
+                        *   For example, if you state that the top reason for buying a car is to upgrade, you might add `[Source: Page 5, Profil Konsumen 2021]`.
+                        *   If the context is a single block of text without metadata, you do not need to add a citation. The goal is to link the answer back to the evidence whenever possible.
+                    
+                    7. **Parse The Output**
+                        *   The last step is to parse the output into this format instructions: {format_instructions}
+                    </instructions>
+                   """
+
+
 summary_prompt = """
                  <role>
                  You are an AI assistant who has a task to rephrase the previous LLM output into comprehensive and detailed explanation.
@@ -118,7 +220,8 @@ summary_prompt = """
                  <instructions>
                  1. Analyze the user input in detail, you have to find the pattern between user input and the database execution result (including query used) in <supporting_context> material.
                  2. Construct the corresponding relation or pattern and rephrase it into explanation in detail and comprehensive.
-                 3. Always include query used and the database execution result (**MUST IN DATAFRAME**) in output explanation
+                 3. **IF THE QUERY AND DATABASE EXECUTION RESULT ARE AVAILABLE**, always include query used and the database execution result (**MUST IN DATAFRAME**) in output explanation.
+                    **IF THE QUERY AND DATABASE EXECUTION RESULT ARE NOT AVAILABLE** do not include them in the output!
                  </instructions>
 
                  <user_input>
@@ -144,6 +247,76 @@ class LanggraphAgent:
         return "summary"
       else:
         return "fixing_query"
+  def choose_route(self, state: State):
+      if state["response"]["route"] ==  "query_agent":
+        return "query_agent"
+      elif state["response"]["route"] ==  "azure_search_embedding":
+        return "azure_search_embedding"
+
+  def vector_search(self, state:State):
+        query = state["question"]
+        embeddings = AzureOpenAIEmbeddings(
+            azure_deployment=os.environ.get("AZURE_OPENAI_MODEL_NAME"),
+            openai_api_version=os.environ.get("AZURE_OPENAI_API_VERSION"),
+            azure_endpoint=os.environ.get("AZURE_OPENAI_MODEL_DEPLOYMENT_ENDPOINT"),
+            api_key=os.environ.get("AZURE_OPENAI_KEY"),
+        )
+        simple_vector_store = AzureSearch(
+            azure_search_endpoint=os.environ.get("AZURE_SEARCH_ENDPOINT"),
+            azure_search_key=os.environ.get("AZURE_SEARCH_KEY"),
+            index_name="olx",
+            embedding_function=embeddings.embed_query,
+        )
+        docs = simple_vector_store.similarity_search(
+            query=query,
+            k=3,
+            search_type="hybrid",
+        )
+        list_retrieved_data = []
+        for i, data in enumerate(docs):
+          list_retrieved_data.append(data.page_content)
+
+        output_structure = {
+            "data": list_retrieved_data
+        }
+
+        return output_structure
+  
+
+
+  def route_agent(self, state: State):
+    conversation_id = state["conversation_id"]
+    list_chat_history = self.chat_history.get_chat_history(conversation_id, 6)
+    request = state["question"]
+    user_input = HumanMessage(content=request)
+
+    chat_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", routing_prompt),
+            ("user", "<user_input>\n{user_input}\n</user_input>")
+        ]
+    )
+
+    parser = JsonOutputParser(pydantic_object=RouteSchema)
+    final_chain = chat_prompt | self.llm
+    result = final_chain.invoke(
+       {
+          "user_input": [user_input], 
+          "today_date": self.today_date, 
+          "format_instructions": parser.get_format_instructions(), 
+          "chat_history": list_chat_history,
+       }
+    )
+
+    #print("route_agent result:", result.content)
+
+    self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=request, role="user")
+
+    output_structure = {
+        "response": json.loads(result.content.replace("```json", "").replace("```", ""))
+    }
+    return output_structure
+
 
   def query_agent(self, state: State):
     conversation_id = state["conversation_id"]
@@ -164,12 +337,46 @@ class LanggraphAgent:
     for i, tool_name in enumerate(result.tool_calls):
       result_execution = query_execution.invoke(tool_name['args'])
 
-    self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=request, role="user")
+    #self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=request, role="user")
 
     output_structure = {
         "response": result_execution
     }
     return output_structure
+  
+  def ai_search_agent(self, state: State):
+    conversation_id = state["conversation_id"]
+    list_chat_history = self.chat_history.get_chat_history(conversation_id, 6)
+    request = state["question"]
+    retrieved_context = self.vector_search(state)["data"]
+    user_input = HumanMessage(content=request)
+
+    chat_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", ai_search_prompt),
+            ("user", "<user_input>\n{user_input}\n</user_input>")
+        ]
+    )
+
+    parser = JsonOutputParser(pydantic_object = AISearchSchema)
+    final_chain = chat_prompt | self.llm
+    result = final_chain.invoke(
+       {
+          "user_input": [user_input], 
+          "today_date": self.today_date, 
+          "format_instructions": parser.get_format_instructions(), 
+          "chat_history": list_chat_history, 
+          "retrieved_context": retrieved_context
+       }
+    )
+
+    #self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=request, role="user")
+
+    output_structure = {
+        "response": result
+    }
+    return output_structure
+
 
   def summary_agent(self, state: State):
     conversation_id = state["conversation_id"]
@@ -187,7 +394,14 @@ class LanggraphAgent:
 
     final_chain = chat_prompt | self.llm | StrOutputParser()
     #result = final_chain.invoke({"user_input": user_input, "context": result_execution, "today_date": self.today_date})
-    result = final_chain.stream({"user_input": user_input, "context": result_execution, "today_date": self.today_date, "chat_history": list_chat_history})
+    result = final_chain.stream(
+       {
+          "user_input": user_input, 
+          "context": result_execution, 
+          "today_date": self.today_date, 
+          "chat_history": list_chat_history
+       }
+    )
 
     token_stream = ""
     for token in result:
@@ -200,10 +414,21 @@ class LanggraphAgent:
   def agent_graph(self, question, user_id, conversation_id):
     builder = StateGraph(State)
 
+    builder.add_node("route_agent", self.route_agent)
     builder.add_node("query_agent", self.query_agent)
+    builder.add_node("azure_search_embedding", self.ai_search_agent)
     builder.add_node("summary_agent", self.summary_agent)
 
-    builder.add_edge(START, "query_agent")
+    builder.add_edge(START, "route_agent")
+    builder.add_conditional_edges(
+       "route_agent",
+       self.choose_route,
+       {
+          "query_agent": "query_agent",
+          "azure_search_embedding": "azure_search_embedding"
+       }
+    )
+    builder.add_edge("azure_search_embedding", "summary_agent")
     builder.add_edge("query_agent", "summary_agent")
     builder.add_edge("summary_agent", END)
 
@@ -212,7 +437,16 @@ class LanggraphAgent:
     with open("graph.png", "wb") as f:
       f.write(graph.get_graph().draw_mermaid_png())
     
-    run_graph = graph.stream({"question": question, "response": [], "list_chat_history":[], "conversation_id":conversation_id, "user_id":user_id}, stream_mode = "messages")
+    run_graph = graph.stream(
+       {
+          "question": question, 
+          "response": [], 
+          "list_chat_history":[], 
+          "conversation_id":conversation_id, 
+          "user_id":user_id
+       },
+       stream_mode = "messages"
+    )
 
     for token, metadata in run_graph:
       print(token.content)
