@@ -10,4 +10,4 @@ os.environ["LANGCHAIN_PROJECT"] = os.environ.get("LANGCHAIN_PROJECT")
 api_config(app)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host = "localhost", port=8001)
+    uvicorn.run(app, host = "localhost", port=8000)
