@@ -12,6 +12,9 @@ from app.tools.LanggraphTools import query_execution, ChatHistory
 from langchain_community.vectorstores.azuresearch import AzureSearch
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizedQuery
 
 load_dotenv()
 
@@ -156,7 +159,8 @@ ai_search_prompt = """
                     <general_context>
                     1. The user may give you structured or unstructured data, based on its case.
                     2. Today's date is {today_date}.
-                    3. Here is the list of the past conversation: {chat_history}
+                    3. Here is the list of the past conversation: {chat_history}.
+                    4. The user's access level is: {user_access_level}.
                     </general_context>
 
                     <supporting_context>
@@ -254,33 +258,52 @@ class LanggraphAgent:
         return "azure_search_embedding"
 
   def vector_search(self, state:State):
-        query = state["question"]
-        embeddings = AzureOpenAIEmbeddings(
-            azure_deployment=os.environ.get("AZURE_OPENAI_MODEL_NAME"),
-            openai_api_version=os.environ.get("AZURE_OPENAI_API_VERSION"),
-            azure_endpoint=os.environ.get("AZURE_OPENAI_MODEL_DEPLOYMENT_ENDPOINT"),
-            api_key=os.environ.get("AZURE_OPENAI_KEY"),
-        )
-        simple_vector_store = AzureSearch(
-            azure_search_endpoint=os.environ.get("AZURE_SEARCH_ENDPOINT"),
-            azure_search_key=os.environ.get("AZURE_SEARCH_KEY"),
-            index_name="olx",
-            embedding_function=embeddings.embed_query,
-        )
-        docs = simple_vector_store.similarity_search(
-            query=query,
-            k=3,
-            search_type="hybrid",
-        )
-        list_retrieved_data = []
-        for i, data in enumerate(docs):
-          list_retrieved_data.append(data.page_content)
+    query = state["question"]
+    access_level_filter = state["access_level"]
+    
+    embeddings = AzureOpenAIEmbeddings(
+        azure_deployment=os.environ.get("AZURE_OPENAI_MODEL_NAME"),
+        openai_api_version=os.environ.get("AZURE_OPENAI_API_VERSION"),
+        azure_endpoint=os.environ.get("AZURE_OPENAI_MODEL_DEPLOYMENT_ENDPOINT"),
+        api_key=os.environ.get("AZURE_OPENAI_KEY"),
+    )
+    search_vector = embeddings.embed_query(query)
 
-        output_structure = {
-            "data": list_retrieved_data
+    search_client = SearchClient(
+      endpoint=os.environ.get("AZURE_SEARCH_ENDPOINT"),
+      index_name="postman-test",
+      credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_KEY"))
+      )
+
+    # Perform the hybrid search
+    search_results = search_client.search(
+          search_text=query, 
+          top=3,
+          select="content, image_path, title",
+          vector_queries=[
+              VectorizedQuery(
+                  vector=search_vector, 
+                  k_nearest_neighbors=20, 
+                  fields="text_vector" # This is correct!
+              )
+          ],
+          filter= f"min_access_level le {access_level_filter} and max_access_level ge {access_level_filter}"
+      )
+    
+    list_retrieved_data = []
+    for result in search_results:
+        retrieved_item = {
+            "content": result.get("content"),
+            "image_path": result.get("image_path"),
+            "title": result.get("title")
         }
+        list_retrieved_data.append(retrieved_item)
 
-        return output_structure
+    output_structure = {
+        "data": list_retrieved_data
+    }
+
+    return output_structure
   
 
 
@@ -347,30 +370,54 @@ class LanggraphAgent:
   def ai_search_agent(self, state: State):
     conversation_id = state["conversation_id"]
     list_chat_history = self.chat_history.get_chat_history(conversation_id, 6)
-    request = state["question"]
-    retrieved_context = self.vector_search(state)["data"]
-    user_input = HumanMessage(content=request)
+    question = state["question"]
+    access_level = state["access_level"]
+    
+    retrieved_docs = self.vector_search(state)["data"]
 
     chat_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", ai_search_prompt),
-            ("user", "<user_input>\n{user_input}\n</user_input>")
+            MessagesPlaceholder(variable_name="user_message_with_image")
         ]
     )
 
+    multimodal_content = [{"type": "text", "text": question}]
+    
+    image_url_to_add = None
+
+    if retrieved_docs and isinstance(retrieved_docs, list):
+        for doc in retrieved_docs:
+
+            if isinstance(doc, dict) and doc.get("image_path"):
+                image_url_to_add = doc["image_path"]
+                print(f"Found image to include: {image_url_to_add}")
+                break
+
+
+    if image_url_to_add:
+        multimodal_content.insert(0, {
+            "type": "image_url",
+            "image_url": {"url": image_url_to_add}
+        })
+
+    final_user_message = HumanMessage(content=multimodal_content)
+    
+
     parser = JsonOutputParser(pydantic_object = AISearchSchema)
     final_chain = chat_prompt | self.llm
+    
     result = final_chain.invoke(
        {
-          "user_input": [user_input], 
+          "user_message_with_image": [final_user_message],
           "today_date": self.today_date, 
           "format_instructions": parser.get_format_instructions(), 
           "chat_history": list_chat_history, 
-          "retrieved_context": retrieved_context
+          "retrieved_context": retrieved_docs,
+          "user_access_level": access_level
        }
     )
-
-    #self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=request, role="user")
+    
 
     output_structure = {
         "response": result
@@ -411,7 +458,7 @@ class LanggraphAgent:
     self.chat_history.store_chat(conversation_id=conversation_id, user_id=state["user_id"], message=token_stream, role="assistant")
     
 
-  def agent_graph(self, question, user_id, conversation_id):
+  def agent_graph(self, question, user_id, conversation_id, access_level):
     builder = StateGraph(State)
 
     builder.add_node("route_agent", self.route_agent)
@@ -443,7 +490,8 @@ class LanggraphAgent:
           "response": [], 
           "list_chat_history":[], 
           "conversation_id":conversation_id, 
-          "user_id":user_id
+          "user_id":user_id,
+          "access_level": access_level
        },
        stream_mode = "messages"
     )
