@@ -34,7 +34,8 @@ def chatbot_ui():
         request_body = {
             "user_id": user_id,
             "conversation_id": conversation_id,
-            "request": chat_input
+            "request": chat_input,
+            "access_level": 25
         }
         
         # Add user message to chat history
