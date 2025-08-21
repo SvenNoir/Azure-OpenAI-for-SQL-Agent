@@ -284,7 +284,7 @@ class LanggraphAgent:
               VectorizedQuery(
                   vector=search_vector, 
                   k_nearest_neighbors=20, 
-                  fields="text_vector" # This is correct!
+                  fields="text_vector"
               )
           ],
           filter= f"min_access_level le {access_level_filter} and max_access_level ge {access_level_filter}"
