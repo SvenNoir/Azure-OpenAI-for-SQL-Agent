@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from dotenv import load_dotenv
 from fastapi.responses import StreamingResponse
 from app.controller.LanggraphController import SQLAgent
-#from app.controller.AddEmbeddingController import AHMEmbeddingController
+from app.controller.AddEmbeddingController import AHMEmbeddingController
 from app.controller.CreateIndexController import AHMCreateIndexController
 from app.schema.LanggraphModel import SQLAgentRequest, IndexSchema, AddEmbeddingSchema
 from fastapi import UploadFile, File, Form
@@ -35,9 +35,9 @@ def sql_agent_test(query: SQLAgentRequest):
 def create_index(index_name: IndexSchema):
     return AHMCreateIndexController.create_index(index_name=index_name.index_name)
 
-#@app_route.post("/add-embedding")
-#def add_embedding(file : UploadFile = File(...), index_name: str = Form(...)):
-#    return AHMEmbeddingController.flow_multimodal_append_from_bytes(file_path= file, index_name=index_name)
+@app_route.post("/add-embedding")
+def add_embedding(file_bytes : UploadFile = File(...), original_filename: str = Form(...), index_name: str = Form(...)):
+    return AHMEmbeddingController.flow_multimodal_append_from_bytes(file_bytes= file_bytes, original_filename=original_filename, index_name=index_name)
 
 def api_config(app):
     app.include_router(

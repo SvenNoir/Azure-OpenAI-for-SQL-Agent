@@ -1,7 +1,4 @@
-# --- Make sure to add this new import at the top of your file ---
 from azure.storage.blob import BlobServiceClient
-
-# ... (keep all your other existing imports)
 import io
 import os
 import json
@@ -45,7 +42,6 @@ from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 
 load_dotenv()
 
-# --- (Your prompts remain unchanged) ---
 prompt_image = """
                You are an AI assistant responsible for classifying documents for indexing. Your task is to decide whether a document should be indexed as text or as an image based on its content.
 
@@ -75,7 +71,6 @@ prompt_image = """
                2. **A flowchart describing a business process that will lose context with only OCR extraction →** "Index as Image"
                """
 
-# New prompt for image description/summarization
 prompt_image_description = """
 You are an AI assistant that creates detailed descriptions of images for embedding and retrieval purposes.
 
@@ -94,14 +89,10 @@ Provide a detailed paragraph description of the image content.
 
 class EmbeddingProces:
     def __init__(self):
-        # Good practice to initialize clients once if possible, but your current approach is fine.
         pass
 
-    # --- NEW METHOD to handle uploading images to Blob Storage ---
     def upload_image_to_blob(self, base64_image_data, original_file_name, page_number):
-        """Uploads a base64 encoded image to Azure Blob Storage and returns the URL."""
         try:
-            # Assumes you have these in your env_setting.py
             connection_string = os.environ.get("BLOB_CONNECTION_STRING2")
             container_name = os.environ.get("CONTAINER_NAME")
 
@@ -110,16 +101,13 @@ class EmbeddingProces:
 
             blob_service_client = BlobServiceClient.from_connection_string(connection_string)
             
-            # Create a unique name for the blob to avoid collisions
             file_basename = os.path.splitext(original_file_name)[0]
             blob_name = f"{file_basename}_page_{page_number}_{uuid.uuid4()}.png"
             
-            # Decode the base64 string into bytes
             image_bytes = base64.b64decode(base64_image_data)
             
             blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
             
-            # Upload the image bytes
             blob_client.upload_blob(image_bytes, blob_type="BlockBlob", overwrite=True)
             
             print(f"Successfully uploaded image for page {page_number} to: {blob_client.url}")
@@ -130,7 +118,7 @@ class EmbeddingProces:
             return None
 
     def az_docint(self, file_path):
-        # This method remains unchanged
+       
         loader = AzureAIDocumentIntelligenceLoader(
             api_endpoint=os.getenv("DOC_INT_ENDPOINT"),
             api_key=os.getenv("DOC_INT_API_KEY"),
@@ -154,7 +142,6 @@ class EmbeddingProces:
         return texts, embedding_dimension, embeddings
         
     def create_index(self, embedding_dimension, index_name):
-        # This method remains unchanged. 'image_path' as String is correct for a URL.
         vector_search = VectorSearch(
             profiles=[VectorSearchProfile(name="myHnswProfile", algorithm_configuration_name="myHnsw")],
             algorithms=[HnswAlgorithmConfiguration(name="myHnsw", parameters={"m":4, "efConstruction":400, "efSearch":500, "metric":"cosine"})]
@@ -180,7 +167,6 @@ class EmbeddingProces:
         return result
 
     def get_embeddings_instance(self):
-        # This method remains unchanged
         return AzureOpenAIEmbeddings(
             azure_deployment=os.getenv("AZURE_OPENAI_MODEL_NAME"),
             openai_api_version=os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION"),
@@ -189,7 +175,6 @@ class EmbeddingProces:
         )
 
     def get_llm_instance(self):
-        # This method remains unchanged
         return AzureChatOpenAI(
           azure_endpoint = os.getenv("AZURE_ENDPOINT"),
           azure_deployment = os.getenv("AZURE_DEPLOYMENT"),
@@ -199,7 +184,6 @@ class EmbeddingProces:
         )
 
     def image_indexing_decider(self, base64_image):
-        # This method remains unchanged
         llm = self.get_llm_instance()
         class ImageSchema(BaseModel):
             description: str = Field(..., description="Description that contain the gist of the current task")
@@ -213,7 +197,7 @@ class EmbeddingProces:
         return json.loads(result_content)
 
     def describe_image(self, base64_image):
-        # This method remains unchanged
+       
         llm = self.get_llm_instance()
         human_message = HumanMessage(content=[{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}])
         chat_prompt = ChatPromptTemplate.from_messages([("system", prompt_image_description), MessagesPlaceholder("input")])
@@ -223,7 +207,6 @@ class EmbeddingProces:
 
     def process_pdf_pages_multimodal(self, file_bytes: bytes, original_filename: str):
         processed_pages = []
-        # Key change: open from a byte stream, not a file path
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         page_count = len(doc)
         for i in range(page_count):
@@ -246,7 +229,6 @@ class EmbeddingProces:
         doc.close()
         return processed_pages
 
-    # --- FIXED: Re-added the 'else' to fix the logic bug ---
     def create_multimodal_chunks(self, processed_pages):
         chunks_to_upload = []
         embeddings = self.get_embeddings_instance()
@@ -271,7 +253,6 @@ class EmbeddingProces:
                             "text_vector": chunk_embedding,
                         }
                         chunks_to_upload.append(doc)
-            # This 'else' is CRITICAL. It was missing.
             else: 
                 print(f"Page {page_num}: Processing as image")
                 image_url = self.upload_image_to_blob(
@@ -291,10 +272,9 @@ class EmbeddingProces:
                 chunks_to_upload.append(doc)
         
         return chunks_to_upload
-    # --- END OF MODIFIED SECTION ---
 
     def upload_to_index(self, index_name, texts, embeddings, file_path):
-        # This method remains unchanged
+       
         documents_to_upload = []
         for i, text_chunk in enumerate(texts):
             chunk_embedding = embeddings.embed_query(text_chunk)
@@ -309,7 +289,7 @@ class EmbeddingProces:
         return upload_embeddings
 
     def upload_multimodal_chunks(self, index_name, chunks):
-        # This method remains unchanged
+       
         search_documents_client = SearchClient(endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"), index_name=index_name, credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_KEY")))
         upload_result = search_documents_client.upload_documents(documents=chunks)
         return upload_result
@@ -335,7 +315,7 @@ class EmbeddingProces:
             return {"status": "error", "message": f"Error: {str(e)}"}
 
     def flow(self, file_path, index_name):
-        # This method remains unchanged
+       
         try:
             texts, embedding_dimension, embeddings = self.az_docint(file_path)
             creating_index = self.create_index(embedding_dimension, index_name)
@@ -348,4 +328,4 @@ class EmbeddingProces:
 
 # Your usage example remains the same
 AHMEmbeddingController = EmbeddingProces()
-result = AHMEmbeddingController.flow_multimodal_append_from_bytes("Company Paid Leave Policy.pdf", "postman-test")
+#result = AHMEmbeddingController.flow_multimodal_append_from_bytes("Company Paid Leave Policy.pdf", "postman-test")
